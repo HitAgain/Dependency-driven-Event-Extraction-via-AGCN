@@ -62,8 +62,43 @@ word_vocabulary[" "] = 2  # 空格
 weights = np.vstack((model.syn0[-1], model.syn0[-2], model.syn0[-3], model.syn0))
 logging.info("[Config]pretrain word2vec dict && weights prepared success")
 
+
+def gen_word_to_char_matrix(word_ls, char_ls):
+    matrix = np.zeros((len(char_ls), len(word_ls)))
+    start_ind = 0
+    for ind, word in enumerate(word_ls):
+        for j in range(start_ind, start_ind + len(word)):
+            matrix[j][ind] = 1
+        start_ind += len(word)
+    return matrix
+
+def gen_dep_matrix(relations, heads):
+    dep_link_matrix = np.eye(len(relations), dtype=float)
+    for tail, head in enumerate(heads):
+        if head != 0:
+            dep_link_matrix[tail][head - 1] = 1.0
+            dep_link_matrix[head - 1][tail] = 1.0
+    dep_type_matrix = np.zeros(len(relations), len(relations), dtype = int)
+    for i in range(len(relations)):
+        if heads[i] == 0 and relations[i] == 'HED':
+            dep_type_matrix[i][i] = dep_map["HED"]
+        else:
+            dep_type_matrix[i][heads[i] - 1] = dep_map[relations[i]]
+            dep_type_matrix[heads[i] - 1][i] = dep_map[relations[i]]
+    return dep_link_matrix, dep_type_matrix
+
+def matrix_padding(max_cols, max_rows, ori_mat_ls):
+    res = []
+    for mat in ori_mat_ls:
+        # col padding
+        mat = np.concatenate((mat, np.zeros((len(mat), max_cols - len(mat[0])))), axis = 1)
+        # row padding
+        mat = np.concatenate((mat, np.zeros((max_rows - len(mat), len(mat[0])))), axis = 0)
+        res.append(mat)
+    return np.array(res)
+
 #############################数据读入模块#############################
-def get_sample(filename):
+def dataset(filename):
     sample = []
     with open(filename, 'r', encoding="utf-8") as f_in:
         for l in f_in:
@@ -106,15 +141,15 @@ class data_generator(DataGenerator):
             # word input && word2char transform matrix
             char_ls = list(text)
             word_ls = dep_feature["word_ls"].split("|")
-            word2char_matrix = self.gen_word_to_char_matrix(word_ls, char_ls)
+            word2char_matrix = gen_word_to_char_matrix(word_ls, char_ls)
             word_ids = [word_vocabulary.get(word, 1) for word in word_ls]
             batch_word_ids.append(np.array(word_ids))
             batch_word2char_mat.append(word2char_matrix)
 
             # dep input
             relations = dep_feature["dep_type"].split("|")
-            heads = dep_feature["dep_link"].split("|")
-            dep_link_mat, dep_type_mat = self.gen_dep_matrix(relations, heads)
+            heads = [int(head) for head in dep_feature["dep_link"].split("|")]
+            dep_link_mat, dep_type_mat = gen_dep_matrix(relations, heads)
             batch_dep_type_mat.append(dep_type_mat)
             batch_dep_link_mat.append(dep_link_mat)
 
@@ -139,9 +174,9 @@ class data_generator(DataGenerator):
                 batch_segment_ids = sequence_padding(batch_segment_ids)
                 batch_labels = sequence_padding(batch_labels)
                 batch_word_ids = sequence_padding(batch_word_ids)
-                batch_word2char_mat = self.matrix_padding(max_cols, max_rows, batch_word2char_mat)
-                batch_dep_link_mat = self.matrix_padding(max_cols, max_cols, batch_dep_link_mat)
-                batch_dep_type_mat = self.matrix_padding(max_cols, max_cols, batch_dep_type_mat)
+                batch_word2char_mat = matrix_padding(max_cols, max_rows, batch_word2char_mat)
+                batch_dep_link_mat = matrix_padding(max_cols, max_cols, batch_dep_link_mat)
+                batch_dep_type_mat = matrix_padding(max_cols, max_cols, batch_dep_type_mat)
 
                 # crf层要求label dims=3 最后一个维度为1
                 batch_label_reshape = batch_labels.reshape(
@@ -150,63 +185,34 @@ class data_generator(DataGenerator):
                 batch_token_ids, batch_segment_ids, batch_word_ids, batch_dep_type_mat, batch_dep_link_mat, batch_word2char_mat, batch_labels\
                     = [], [], [], [], [], [], []
 
-    def gen_word_to_char_matrix(self, word_ls, char_ls):
-        matrix = np.zeros((len(char_ls), len(word_ls)))
-        start_ind = 0
-        for ind, word in enumerate(word_ls):
-            for j in range(start_ind, start_ind + len(word)):
-                matrix[j][ind] = 1
-            start_ind += len(word)
-        return matrix
-
-    def gen_dep_matrix(self, relations, heads):
-        dep_link_matrix = np.eye(len(relations), dtype=float)
-        for tail, head in enumerate(heads):
-            if head != 0:
-                dep_link_matrix[tail][head - 1] = 1.0
-                dep_link_matrix[head - 1][tail] = 1.0
-        dep_type_matrix = np.zeros(len(relations), len(relations), dtype = int)
-        for i in range(len(relations)):
-            if heads[i] == 0 and relations[i] == 'HED':
-                dep_type_matrix[i][i] = dep_map["HED"]
-            else:
-                dep_type_matrix[i][heads[i] - 1] = dep_map[relations[i]]
-                dep_type_matrix[heads[i] - 1][i] = dep_map[relations[i]]
-        return dep_link_matrix, dep_type_matrix
-
-    def matrix_padding(self, max_cols, max_rows, ori_mat_ls):
-        res = []
-        for mat in ori_mat_ls:
-            # col padding
-            mat = np.concatenate((mat, np.zeros((len(mat), max_cols - len(mat[0])))), axis = 1)
-            # row padding
-            mat = np.concatenate((mat, np.zeros((max_rows - len(mat), len(mat[0])))), axis = 0)
-            res.append(mat)
-        return np.array(res)
 
 #############################训练回调模块#############################
 class Debug(Callback):
     def __init__(self):
         self.dev_path = './data/dev.json'
         self.test_path = './data/test.json'
-        self.dev_data = get_sample(self.dev_path)
+        self.dataset_dev = dataset(self.dev_path)
         self.test_data = list()
         with open(self.test_path, 'r', encoding="utf-8") as f:
             for l in f:
-                l = l.strip("\n").split("\t")
-                text = l[0]
+                data = json.loads(l.strip("\n"))
+                text = data['text'].strip("\n").replace("\n", "").replace(" ", "。")
                 self.test_data.append(text)
-        self.best_F1 = 0.
-        print("========Evaluate Callback init success=========")
+        self.best_F1 = 0.0
 
-    def extract_arguments(self, text):
+    def extract(self, text):
         token_ids, segment_ids = tokenizer.encode(text)
         token_np = np.array([token_ids])
         segment_np = np.array([segment_ids])
-        predict_ids = list()
-        scores = self.model.predict([token_np, segment_np])[0]
-        predict_index_list = np.argmax(scores, axis=-1)
-        predict_ids = predict_index_list.tolist()
+        char_ls = list(text)
+        word_ls, postags, arcs = ltp_parse(text)
+        word_id_np = np.array([word_vocabulary.get(word, 1) for word in word_ls])
+        relations = [arc.relation for arc in arcs]
+        heads = [arc.head for arc in arcs]
+        word2char_matrix = gen_word_to_char_matrix(word_ls, char_ls)
+        dep_link_mat, dep_type_mat = gen_dep_matrix(relations, heads)
+        scores = self.model.predict([token_np, segment_np, word_id_np, dep_type_mat, dep_link_mat, word2char_matrix])[0]
+        predict_ids = np.argmax(scores, axis=-1).tolist()
         arguments, starting = [], False
         for i, label in enumerate(predict_ids):
             if label > 0:
@@ -219,7 +225,6 @@ class Debug(Callback):
                     starting = False
             else:
                 starting = False
-        # 返回schema属性和词片段
         res = defaultdict(list)
         for l, arg_ids in arguments:
             res[l].append(tokenizer.decode([token_ids[ind] for ind in arg_ids]))
@@ -227,8 +232,8 @@ class Debug(Callback):
 
     def evaluate(self):
         X, Y, Z = 1e-10, 1e-10, 1e-10
-        for text, arguments in self.dev_data:
-            pred_arguments = self.extract_arguments(text)
+        for text, arguments, dep_feature in self.dev_data:
+            pred_arguments = self.extract(text)
             Y += len(pred_arguments)
             Z += len(arguments)
             for k, v in pred_arguments.items():
@@ -241,31 +246,21 @@ class Debug(Callback):
         pass
 
     def on_train_end(self, logs={}):
-        no_schema = 0
-        total_num = len(self.test_data)
         with open("./test_result.txt", "w", encoding="utf-8") as fout:
             for text in self.test_data:
                 fout.write("{}\t".format(text))
-                extract_schema = self.extract_arguments(text)
-                if len(extract_schema) == 0:
-                    no_schema += 1
+                extract_schema = self.extract(text)
                 for label, schema in extract_schema.items():
                     fout.write("{}:{}\t".format(label, schema))
                 fout.write("\n")
-            fout.write("覆盖率：{}\n".format((total_num - no_schema) / total_num))
-        print("test file result write in {}".format("test_result.txt"))
+        logging.info("test file result write in {}".format("test_result.txt"))
 
     def on_epoch_end(self, epoch, logs={}):
-        print("============ Dev Test   ==============")
         f1, precision, recall = self.evaluate()
-        print("Epoch:{}|||f1:{}--P:{}--R:{}".format(epoch, f1, precision, recall))
+        logging.info("Epoch:{}|||f1:{}--P:{}--R:{}".format(epoch, f1, precision, recall))
         if f1 > self.best_F1:
-            print(
-                "=============== BEST f1 change to {} ==================".format(f1))
             self.best_F1 = f1
             self.model.save_weights('./best_model_weights.h5')
-        else:
-            print("=========epoch {} F1 NOT BETTER============".format(epoch))
 
 class DepdencyDrivenEE(object):
 
@@ -326,15 +321,15 @@ class DepdencyDrivenEE(object):
                 optimizer=Adam(learning_rate=self.learning_rate),
                 loss=crf.loss_function)
             model.summary()
-            logging.info("===========model build success in train mode============")
+            logging.info("model build success in train mode")
             return model
         else:
             model.load_weights("./best_model_weights.h5")
-            logging.info("===========model build success in inference mode============")
+            logging.info("model build success in inference mode")
             return model
 
     def train(self):
-        train_data = get_sample("./data/train.txt")
+        train_data = dataset("./data/train.txt")
         train_generator = data_generator(train_data, self.batch_size)
         debug_callback = Debug()
         self.model.fit_generator(
@@ -350,8 +345,15 @@ class DepdencyDrivenEE(object):
         token_ids, segment_ids = tokenizer.encode(text)
         token_np = np.array([token_ids])
         segment_np = np.array([segment_ids])
+        char_ls = list(text)
+        word_ls, postags, arcs = ltp_parse(text)
+        word_id_np = np.array([word_vocabulary.get(word, 1) for word in word_ls])
+        relations = [arc.relation for arc in arcs]
+        heads = [arc.head for arc in arcs]
+        word2char_matrix = gen_word_to_char_matrix(word_ls, char_ls)
+        dep_link_mat, dep_type_mat = gen_dep_matrix(relations, heads)
         predict_ids = list()
-        scores = self.model.predict([token_np, segment_np])[0]
+        scores = self.model.predict([token_np, segment_np, word_id_np, dep_type_mat, dep_link_mat, word2char_matrix])[0]
         predict_index_list = np.argmax(scores, axis=-1)
         predict_ids = predict_index_list.tolist()
         arguments, starting = [], False
@@ -366,7 +368,6 @@ class DepdencyDrivenEE(object):
                     starting = False
             else:
                 starting = False
-        # 返回schema属性和词片段
         res = defaultdict(list)
         for l, arg_ids in arguments:
             res[l].append(tokenizer.decode([token_ids[ind] for ind in arg_ids]))
@@ -376,7 +377,7 @@ class DepdencyDrivenEE(object):
         save_model = self.build_model()
         save_model.load_weights("./best_model_weights.h5")
         tf.saved_model.save(save_model, "./serving")
-        logging.info("check online model in dir:{}".format("./title_gen_serving"))
+        logging.info("check online model in dir:{}".format("./event_extract_serving"))
 
 
 if __name__ == '__main__':
