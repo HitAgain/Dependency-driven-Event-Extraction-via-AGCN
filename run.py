@@ -207,9 +207,9 @@ class Debug(Callback):
         self.best_F1 = 0.0
 
     def extract(self, text):
-        token_ids, segment_ids = tokenizer.encode(text)
-        token_np = np.array([token_ids[1:-1]])
-        segment_np = np.array([segment_ids[1:-1]])
+        token_ids, segment_ids = tokenizer.encode(list(text))
+        token_np = np.array([token_ids])
+        segment_np = np.array([segment_ids])
         char_ls = [tokenizer.decode([token_id]) for token_id in token_ids[1:-1]]
         word_ls, postags, arcs = ltp_parse(text)
         word_id_np = np.array([word_vocabulary.get(word, 1) for word in word_ls])
@@ -349,9 +349,9 @@ class DepdencyDrivenEE(object):
 
 
     def predict(self, text):
-        token_ids, segment_ids = tokenizer.encode(text)
-        token_np = np.array([token_ids[1:-1]])
-        segment_np = np.array([segment_ids[1:-1]])
+        token_ids, segment_ids = tokenizer.encode(list(text))
+        token_np = np.array([token_ids])
+        segment_np = np.array([segment_ids])
         char_ls = [tokenizer.decode([token_id]) for token_id in token_ids[1:-1]]
         word_ls, postags, arcs = ltp_parse(text)
         word_id_np = np.array([word_vocabulary.get(word, 1) for word in word_ls])
@@ -446,12 +446,14 @@ if __name__ == '__main__':
     if args.mode == "train":
         model.train(args)
     elif args.mode == "predict":
-        pass
+        while True:
+            sent = input("Input Sent:")
+            if sent == "q":
+                break
+            res = model.predict(sent)
+            print(res)
+        print("exit predict")
     elif args.mode == "export":
-        pass
+        model.export()
     else:
         raise ValueError("mode error must be one of [train, predict, export]")
-
-
-
-
